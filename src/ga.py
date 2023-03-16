@@ -25,7 +25,7 @@ STAT_FILE = ""
 
 
 class GA:
-    def __init__(self, file_path, frames_number, population_size=60, cross_prob=0.9,
+    def __init__(self, file_path, frames_number, population_size=60, cross_prob=0.85,
                  resolution=(352, 288), bitrate=1200, hof=5, alpha=0.01, init_file=None, stat_file=None):
         self.population_size = population_size
         self.cross_prob = cross_prob
@@ -52,7 +52,6 @@ class GA:
             self.read_population(init_file)
 
         self.stat_file = stat_file
-        # print(self.population)
 
     def init_population(self):
         self.next_population = np.array(np.array(
@@ -144,8 +143,8 @@ class GA:
         return psnr_yuv, bitrate
 
     def fitness(self, psnr, bitrate):
-        penalty = max(0, bitrate - self.bitrate) * self.alpha * self.epoch
-        return psnr - penalty
+        penalty = max(0, bitrate / self.bitrate) * self.alpha * self.epoch
+        return psnr / 50 - penalty
 
     def make_children(self, parents):
         i, j = self.get_two_random_indices(len(parents))
@@ -168,34 +167,25 @@ class GA:
         for i in range(self.population_size):
             fitness[i] = self.fitness(*results[i])
             self.psnrs[i], self.bitrates[i] = results[i]
-            # print(fs[i], *results[i])
 
-        # print("fs:", fs)
         next_population = []
         if self.hof > 0:
             hof = fitness.argsort()[-self.hof:][::-1]
-            # print("!!!!", self.population[hof][0])
-            # print("----", self.population[hof])
             next_population.extend(self.population[hof])
 
-        fa = np.average(fitness)
-        fs = copy.deepcopy(fitness) / fa
+        fitness += min(fitness)
+        s = sum(fitness)
 
         best_parents = []
-        while (np.count_nonzero(fs)):
-            p = random.random()
-            best_parents.extend(np.argwhere(fs >= 1 + p).flatten())
-            fs = fs - 1
-            fs[fs < 0] = 0
-            # print("fs:", fs, "len:", len(best_parents))
+        rs = [random.randint(0, int(s + 1)) for _ in range(self.population_size // 3)]
 
-        # print("best_parents:", best_parents)
-        if len(best_parents) < max(2, self.population_size // 4):
-            hf = max(2, self.population_size // 4) - len(best_parents)
-            hof = fitness.argsort()[-hf:][::-1]
-            best_parents.extend(hof.tolist())
-
-        # print("best_parents:", best_parents)
+        for r in rs:
+            cur_s = 0
+            i = 0
+            while cur_s <= r and i < len(fitness):
+                cur_s += fitness[i]
+                i += 1
+            best_parents.append(i - 1)
 
         while len(next_population) < self.population_size:
             next_population.extend(self.make_children(best_parents))
@@ -214,10 +204,10 @@ class GA:
         for _ in tqdm(range(steps)):
             self.step()
 
-for pop in [100, 150, 900, 1200, 1500]:
+for pop, st in [(10, 10), (100, 300), (900, 500), (1200, 500)]:
     STAT_FILE = open(f"../stefan_cif_stat_{pop}.pop", 'w')
     g = GA('../dataset/stefan_cif.yuv', frames_number=90, population_size=pop, stat_file=True)
-    g.fit(steps=600)
+    g.fit(steps=st)
     STAT_FILE.close()
     with open(f"../stefan_cif_{pop}.pop", 'w') as out:
         for line in g.population: print(*line, file=out)
