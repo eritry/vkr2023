@@ -1,9 +1,6 @@
-#!/usr/bin/env python
-# coding: utf-8
 import collections
 import sys
 from multiprocessing import Pool
-# In[6]:
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
 from sklearn import compose, pipeline
@@ -17,8 +14,6 @@ import utils
 import numpy as np
 from tqdm import tqdm as tqdm
 from sklearn.linear_model import LinearRegression
-
-# In[7]:
 
 
 STAT_FILE = ""
@@ -55,7 +50,7 @@ def get_two_random_indices(n):
 class GA:
     def __init__(self, file_path, frames_number, population_size=60, cross_prob=0.8,
                  resolution=(352, 288), bitrate=1200, hof=8, alpha=0.1, table=None,
-                 core_vectors=None, init_file=None, stat_file=None, gop_size=4, train_epochs=100, choosing_types = False):
+                 core_vectors=None, stat_file=None, gop_size=4, train_epochs=100, choosing_types = False):
         self.table = table
         self.population_size = population_size
         self.cross_prob = cross_prob
@@ -113,11 +108,6 @@ class GA:
         self.epoch = 0
         self.core_vectors = core_vectors
 
-        if init_file is None:
-            self.init_population()
-        else:
-            self.read_population(init_file)
-
         self.stat_file = stat_file
 
     def init_population(self):
@@ -125,11 +115,6 @@ class GA:
             [np.array(
                 [i] * self.frames
             ) for i in range(20, 42)]))
-
-        # good_randoms = np.array(np.array(
-        #     [np.array(
-        #         [random.randint(20, 42) for _ in range(self.frames)]
-        #     ) for _ in range(min(self.population_size // 10, self.population_size - len(ones)))]))
 
         randoms = np.array(np.array(
             [np.array(
@@ -143,9 +128,6 @@ class GA:
         qps = ones
         if len(randoms > 0):
             qps = np.concatenate((ones, randoms), axis=0)
-
-        # if len(good_randoms > 0):
-        #     qps = np.concatenate((qps, good_randoms), axis=0)
 
         if self.choosing_types:
             types = np.array(np.array(
@@ -163,14 +145,6 @@ class GA:
 
         self.best_types = np.array([1] * self.frames)
         self.best_qps = self.next_population[-1]
-
-    # read initial population from 'file_path' file
-    def read_population(self, file_path):
-        population = []
-        for individual in open(file_path, 'r'):
-            v = individual.split()
-            population.append(np.array(v))
-        self.next_population = np.array(population)
 
     # clear statistic for after last epoch
     def clear_statistics(self):
@@ -252,7 +226,7 @@ class GA:
         for k, v in cur_metrics.items():
             print(f'{k}:\t{v}')
 
-        with open(f"../stats/ipip/{fn}_{int(b)}_{pop_size}_{fr_n}.best", 'a') as out:
+        with open(STAT_FILE, 'a') as out:
             print("QP: ", file=out)
             for p in self.best_qps:
                 print(p, end=' ', file=out)
@@ -263,7 +237,6 @@ class GA:
                 for p in self.best_types:
                     print(p, end=' ', file=out)
                 print(file=out)
-
 
     def mutate_types(self, i):
         p = copy.deepcopy(self.types[i])
@@ -407,7 +380,6 @@ class GA:
 
     # run individual based on estimation tables
     def run_individual_estim(self, i):
-
         if self.train_types():
             qp_vec = self.best_qps
             types = self.types[i]
@@ -571,12 +543,12 @@ class GA:
 
 
 target_bitrates = {
-#     'together_4x10': [
-#         (300, 0),
-#         (400, 0),
-#         (500, 0),
-#         (700, 0),
-#     ],
+    'together_4x10': [
+        (300, 0),
+        (400, 0),
+        (500, 0),
+        (700, 0),
+    ],
     'together_4x20': [
         (600, 0),
         (900, 0),
@@ -596,31 +568,6 @@ target_bitrates = {
         (900, 0),
     ]
 }
-    # 'bus_cif': [
-    #     (400, 0.0),
-    #     (700, 0.0),
-    #     (1000, 0.0),
-    #     (1400, 0.0)
-    # ],
-    # 'news_cif': [
-    #     (100, 0.0),
-    #     (150, 0.0),
-    #     (200, 0.0),
-    #     (250, 0.0)
-    # ],
-    # 'akiyo': [
-    #     (30, 0.0),
-    #     (50, 0.0),
-    #     (80, 0.0),
-    #     (100, 0.0)
-    #
-    # ],
-    # 'husky_cif': [
-    #     (4000, 0.0),
-    #     (4500, 0.0),
-    #     (5000, 0.0),
-    #     (5500, 0.0)
-    # ]
 
 pop_size = 60
 epochs = 280
@@ -640,9 +587,10 @@ for inp in target_bitrates.keys():
 
     for b, x in target_bitrates[inp]:
         WANDB = "ipip"
+        STAT_FILE = f"../stats/ipip/{fn}_{int(b)}_{pop_size}_{fr_n}.best"
+        open(STAT_FILE, 'w').close()
 
         cores = [utils.get_core_vector(fp, enc, dec, res, fr_n, b)]
-        open(f"../stats/ipip/{fn}_{int(b)}_{pop_size}_{fr_n}.best", 'w').close()
 
         t = time.time()
 
@@ -652,10 +600,7 @@ for inp in target_bitrates.keys():
 
         g.fit(steps=epochs)
 
-        with open(f"../stats/ipip/{fn}_{int(b)}_{pop_size}_{fr_n}.time", 'w') as outfile:
-            print((time.time() - t) / 60, file=outfile)
-        #
-        with open(f"../stats/ipip/{fn}_{int(b)}_{pop_size}_{fr_n}.best", 'a') as out:
+        with open(STAT_FILE, 'a') as out:
             print("CHECKED QP:", file=out)
             for p in g.checked_best_qps:
                 print(p, end=' ', file=out)
@@ -667,3 +612,5 @@ for inp in target_bitrates.keys():
                     print(p, end=' ', file=out)
                 print(file=out)
 
+        with open(f"../stats/ipip/{fn}_{int(b)}_{pop_size}_{fr_n}.time", 'w') as outfile:
+            print((time.time() - t) / 60, file=outfile)
