@@ -26,6 +26,7 @@ WANDB = ""
 
 
 def get_psnr(mse):
+    if mse == 0: return 255
     return 10 * np.log10((255 * 255) / mse)
 
 
@@ -52,9 +53,9 @@ def get_two_random_indices(n):
 
 
 class GA:
-    def __init__(self, file_path, frames_number, population_size=60, cross_prob=0.7,
-                 resolution=(352, 288), bitrate=1200, hof=1, alpha=0.1, table=None,
-                 core_vectors=None, init_file=None, stat_file=None, gop_size=4, train_epochs=100):
+    def __init__(self, file_path, frames_number, population_size=60, cross_prob=0.8,
+                 resolution=(352, 288), bitrate=1200, hof=8, alpha=0.1, table=None,
+                 core_vectors=None, init_file=None, stat_file=None, gop_size=4, train_epochs=100, choosing_types = False):
         self.table = table
         self.population_size = population_size
         self.cross_prob = cross_prob
@@ -68,6 +69,7 @@ class GA:
         self.train_epochs = train_epochs
         self.timer = 0
         self.fitted = set()
+        self.choosing_types = choosing_types
 
         self.estim = {}
         self.X = {}
@@ -89,10 +91,16 @@ class GA:
         self.filename = utils.get_filename(self.file)
         self.frames = frames_number
         self.res = resolution
-        self.best_one = []
+
+        self.best_qps = []
+        self.best_types = []
+        self.checked_psnr = 0
+        self.checked_best_qps = []
 
         self.population = np.array([])
         self.next_population = np.array([])
+        self.types = np.array([])
+        self.next_types = np.array([])
 
         self.bitrates = np.zeros(self.population_size)
         self.psnrs = np.zeros(self.population_size)
@@ -118,27 +126,43 @@ class GA:
                 [i] * self.frames
             ) for i in range(20, 42)]))
 
-        good_randoms = np.array(np.array(
-            [np.array(
-                [random.randint(20, 42) for _ in range(self.frames)]
-            ) for _ in range(min(self.population_size // 10, self.population_size - len(ones)))]))
+        # good_randoms = np.array(np.array(
+        #     [np.array(
+        #         [random.randint(20, 42) for _ in range(self.frames)]
+        #     ) for _ in range(min(self.population_size // 10, self.population_size - len(ones)))]))
 
         randoms = np.array(np.array(
             [np.array(
                 [random.randint(0, 51) for _ in range(self.frames)]
-            ) for _ in range(self.population_size - len(ones) - len(good_randoms))]))
+            ) for _ in range(self.population_size - len(ones))]))
 
         print(ones)
-        print(good_randoms)
+        # print(good_randoms)
         print(randoms)
-        if len(good_randoms > 0):
-            self.next_population = np.concatenate((ones, good_randoms), axis=0)
+
+        qps = ones
         if len(randoms > 0):
-            self.next_population = np.concatenate((self.next_population, randoms), axis=0)
+            qps = np.concatenate((ones, randoms), axis=0)
+
+        # if len(good_randoms > 0):
+        #     qps = np.concatenate((qps, good_randoms), axis=0)
+
+        if self.choosing_types:
+            types = np.array(np.array(
+                [np.array(
+                    [random.randint(0, 1) for _ in range(self.frames)]
+                ) for _ in range(self.population_size)]))
+
+            self.next_types = types
+
+        self.next_population = qps
 
         if self.core_vectors is not None:
             for i in range(len(self.core_vectors)):
                 self.next_population[-i - 1] = np.array(self.core_vectors[i])
+
+        self.best_types = np.array([1] * self.frames)
+        self.best_qps = self.next_population[-1]
 
     # read initial population from 'file_path' file
     def read_population(self, file_path):
@@ -198,12 +222,15 @@ class GA:
 
     # check if this epoch for train
     def check_train(self):
-        return self.epoch < self.train_epochs or self.epoch % self.train_epochs == 0
+        return self.epoch < self.train_epochs or self.epoch % 10 == 0 or self.steps - self.epoch < 3
+
+    def train_types(self):
+        return self.choosing_types and self.epoch % 80 >= 40
 
     # dump all statistics for last epoch
     def dump_statistics(self):
         print(self.epoch, end=' ')
-        print(self.best_one)
+        print(self.best_qps)
 
         if self.check_train():
             self.psnrs_diffs.append(np.average(np.abs(np.array(self.psnrs_pred) - self.psnrs)))
@@ -214,38 +241,56 @@ class GA:
 
         cur_metrics = self.get_metrics()
 
-        if self.check_train():
-            cur_metrics.update(self.get_plots())
+        # if self.check_train():
+        #     cur_metrics.update(self.get_plots())
 
         wandb.log(cur_metrics)
 
-        if self.check_train():
-            close_plots()
+        # if self.check_train():
+        #     close_plots()
 
         for k, v in cur_metrics.items():
             print(f'{k}:\t{v}')
 
-        with open(f"../stats/{fn}_{int(b)}_{pop_size}.best", 'a') as out:
-            print('[', *self.best_one, ']', file=out, sep=',')
-            print(self.epoch, self.bad_precision, file=out)
+        with open(f"../stats/ipip/{fn}_{int(b)}_{pop_size}_{fr_n}.best", 'a') as out:
+            print("QP: ", file=out)
+            for p in self.best_qps:
+                print(p, end=' ', file=out)
+            print(file=out)
+
+            if self.choosing_types:
+                print("TP: ", file=out)
+                for p in self.best_types:
+                    print(p, end=' ', file=out)
+                print(file=out)
+
+
+    def mutate_types(self, i):
+        p = copy.deepcopy(self.types[i])
+        ind = get_random_index(self.frames)
+        p[ind] = 1 - p[ind]
+        return p
 
     # mutation function: after some epochs, range for mutation value decreases
-    def mutate(self, ind):
-        p = copy.deepcopy(self.population[ind])
+    def mutate(self, i):
+        p = copy.deepcopy(self.population[i])
         ind = get_random_index(self.frames)
-
+        qp = p
+        val = qp[ind]
         if self.epoch < 90:
-            val = p[ind]
-            p[ind] = random.randint(val * 9 // 10, min(51, val * 11 // 10))
+            qp[ind] = random.randint(val * 9 // 10, min(51, val * 11 // 10))
         elif self.epoch < 150:
-            val = p[ind]
-            p[ind] = random.randint(val * 14 // 15, min(51, val * 16 // 15))
+            qp[ind] = random.randint(val * 14 // 15, min(51, val * 16 // 15))
         else:
-            val = p[ind]
             c = 1 if random.randint(0, 1) == 0 else -1
-            p[ind] = min(51, max(0, val + c))
+            qp[ind] = min(51, max(0, val + c))
+        return qp
 
-        return p
+    def crossover_types(self, fp, sp):
+        fparent = copy.deepcopy(self.types[fp])
+        sparent = copy.deepcopy(self.types[sp])
+        i = get_random_index(self.frames)
+        return np.concatenate((fparent[:i], sparent[i:]))
 
     # crossover function: child = weighted sum of parents
     def crossover(self, fp, sp):
@@ -253,22 +298,15 @@ class GA:
         sparent = copy.deepcopy(self.population[sp])
         a = random.random()
         return np.round(fparent * a + (1 - a) * sparent).astype(int)
-        # i = self.get_random_index(self.frames)
-        # return np.concatenate((fparent[:i], sparent[i:])), np.concatenate((sparent[:i], fparent[i:]))
-        # parents = [fp, sp]
-        # fchild = []
-        # schild = []
-        # for i in range(self.frames):
-        #     r = random.randint(0, 1)
-        #     fchild.append(self.population[parents[r]][i])
-        #     schild.append(self.population[parents[1 - r]][i])
-        # return np.array(fchild), np.array(schild)
 
     # fill qpfile
-    def write_qpfile(self, qp_path, qps):
+    def write_qpfile(self, qp_path, qps, types=None):
         with open(qp_path, 'w') as out:
             for j in range(self.frames):
-                c = 'I' if j % self.gop == 0 else 'P'
+                if types is None:
+                    c = 'I' if j % self.gop == 0 else 'P'
+                else:
+                    c = 'I' if types[j] == 0 else 'P'
                 print(j, c, qps[j], file=out)
 
     # add value to data for estimation table
@@ -310,14 +348,16 @@ class GA:
 
     # process individual i: run encoder and decoder and return results for frames
     def process(self, i):
-        qp_vec = tuple(self.population[i])
-
-        qp = '../tmp/QP' + str(i) + '.txt'
+        qp_path = '../tmp/QP' + str(i) + '.txt'
         encoded = '../tmp/encoded' + str(i) + '.yuv'
         decoded = '../tmp/decoded' + str(i) + '.yuv'
 
-        self.write_qpfile(qp, qp_vec)
-        _, err = utils.encode(self.file, encoded, self.res, self.frames, qpfile=qp, keyint=self.gop)
+        if self.train_types():
+            self.write_qpfile(qp_path, self.best_qps, self.types[i])
+        else:
+            self.write_qpfile(qp_path, self.population[i], self.best_types)
+
+        _, err = utils.encode(self.file, encoded, self.res, self.frames, qpfile=qp_path, preset='veryslow')
         if "x264 [error]: can't parse qpfile" in str(err):
             print("QP PARSE ERROR")
             sys.exit(1)
@@ -325,8 +365,9 @@ class GA:
 
         sz = []  # frame sizes in bytes
         for p in out:
-            if 'frame=' in p:
-                sz.append(int(p[11].split('=')[1]))
+            if 'bytes' in p:
+                index = p.index('bytes')
+                sz.append(int(p[index - 1].split('=')[1]))
 
         utils.decode(encoded, decoded)
 
@@ -334,13 +375,13 @@ class GA:
 
         utils.rm(encoded)
         utils.rm(decoded)
-        utils.rm(qp)
+        utils.rm(qp_path)
 
         return mse, sz
 
     # get information about I-frame
     def i_info(self, ind, qp, what):
-        return self.table[qp][ind][what]
+        return self.table[qp][what][ind]
 
     # run individual based on real mse and sz from encoder/decoder
     def run_individual(self, i, mse, sz):
@@ -348,16 +389,16 @@ class GA:
         self.psnrs_pred.append(psnr_est)
         self.bitrates_pred.append(bitrate_est)
 
-        qp_vec = tuple(self.population[i])
+        if self.train_types():
+            qp_vec = self.best_qps
+        else:
+            qp_vec = self.population[i]
 
         last_psnr = 0
         for j in range(self.frames):
-            if j % self.gop == 0:
-                cur_psnr = get_psnr(self.i_info(0, qp_vec[0], 'mse'))
-            else:
-                cur_psnr = get_psnr(mse[j])
-                self.add((j, qp_vec[j]), 'psnr', last_psnr, cur_psnr)
-                self.add((j, qp_vec[j]), 'size', last_psnr, sz[j])
+            cur_psnr = get_psnr(mse[j])
+            self.add((j, qp_vec[j]), 'psnr', last_psnr, cur_psnr)
+            self.add((j, qp_vec[j]), 'size', last_psnr, sz[j])
             last_psnr = cur_psnr
 
         bitrate = sum(sz) / (self.frames / 30) / 1024 * 8
@@ -366,16 +407,23 @@ class GA:
 
     # run individual based on estimation tables
     def run_individual_estim(self, i):
-        qp_vec = tuple(self.population[i])
+
+        if self.train_types():
+            qp_vec = self.best_qps
+            types = self.types[i]
+        else:
+            qp_vec = self.population[i]
+            types = self.best_types
 
         mse_sum = 0
         sz_sum = 0
 
         last_psnr = 0
         for j in range(self.frames):
-            if j % self.gop == 0:  # I-frame
-                psnr_pred = get_psnr(self.i_info(0, qp_vec[0], 'mse'))
-                size_pred = self.i_info(0, qp_vec[0], 'bytes')
+            if (self.choosing_types and (j == 0 or types[j] == 0))\
+                    or (not self.choosing_types and j % self.gop == 0): # I-frame
+                psnr_pred = get_psnr(self.i_info(j, qp_vec[j], 'mse'))
+                size_pred = self.i_info(j, qp_vec[j], 'bytes')
             else:  # P-frame
                 psnr_pred = self.predict_estim((j, qp_vec[j]), 'psnr', last_psnr)
                 size_pred = self.predict_estim((j, qp_vec[j]), 'size', last_psnr)
@@ -395,16 +443,23 @@ class GA:
     def make_children(self, parents):
         i, j = get_two_random_indices(len(parents))
         p = random.random()
-        if p >= self.cross_prob:
-            fc = self.crossover(parents[i], parents[j])
+        if p <= self.cross_prob:
+            if self.train_types():
+                fc = self.crossover_types(parents[i], parents[j])
+            else:
+                fc = self.crossover(parents[i], parents[j])
         else:
-            fc = self.mutate(parents[i])
+            if self.train_types():
+                fc = self.mutate_types(parents[i])
+            else:
+                fc = self.mutate(parents[i])
         return [fc]
 
     def step(self):
         self.timer = time.time()
         self.clear_statistics()
         self.population = self.next_population
+        self.types = self.next_types
 
         fitness = np.zeros(self.population_size)
 
@@ -437,16 +492,40 @@ class GA:
         # choose the best good individual
         if len(good_psnrs) > 0:
             hof = good_psnrs.argsort()[-max(1, self.hof):][::-1]
-            self.best_one = self.population[goods[hof[0]]]
+            best_index = goods[hof[0]]
+
+            if self.train_types():
+                self.best_types = self.types[best_index]
+            else:
+                self.best_qps = self.population[best_index]
+                if self.check_train():
+                    if self.checked_psnr < self.psnrs[best_index]:
+                        self.checked_psnr = self.psnrs[best_index]
+                        if self.train_types():
+                            self.checked_best_types = self.types[best_index]
+                            self.checked_best_qps = self.best_qps
+                        else:
+                            self.checked_best_types = self.best_types
+                            self.checked_best_qps = self.population[best_index]
+
 
         # choose hall of fame from the good individuals
         if self.hof > 0 and len(good_psnrs) > 0:
-            next_population.extend(self.population[goods[hof]])
+            if self.train_types():
+                next_population.extend(self.types[goods[hof]])
+            else:
+                print(goods)
+                print(hof)
+
+                next_population.extend(self.population[goods[hof].astype(int)])
 
         # extend hall of fame with not good individuals
         if self.hof - len(next_population) > 0:
             hof = fitness.argsort()[-(self.hof - len(next_population)):][::-1]
-            next_population.extend(self.population[hof])
+            if self.train_types():
+                next_population.extend(self.types[hof])
+            else:
+                next_population.extend(self.population[hof])
 
         # roulette to find best parents
         fitness += abs(min(fitness))
@@ -469,86 +548,122 @@ class GA:
             next_population.extend(self.make_children(best_parents))
 
         next_population = next_population[:self.population_size]
-        self.next_population = np.array(next_population)
+
+        if self.train_types():
+            self.next_population = self.population
+            self.next_types = np.array(next_population)
+        else:
+            self.next_population = np.array(next_population)
+            self.next_types = self.types
 
         self.dump_statistics()
         self.epoch += 1
 
     def fit(self, steps=200):
+        self.steps = steps
         wandb.init(project="vkr", name=self.filename + ' ' +
                                        str(self.bitrate) + ' ' +
-                                       str(self.population_size) + ' | ' +
-
+                                       str(self.population_size) + ' ' +
+                                       str(self.steps) + ' | ' +
                                        WANDB, reinit=True)
-        self.steps = steps
         for _ in tqdm(range(steps)):
             self.step()
 
 
 target_bitrates = {
-    # 'stefan_cif': [
-    #     (3549.0703, 32.6645),
-    #         (3751.2552, 33.1836),
-    #         (5030.4583, 36.3082),
-    #         (6231.3307, 38.6873),
-    # ],
-
-    'hall': [
-        (300, 36.57),
-        (400, 0.00)
-        #     (998.1867, 31.5303),
-        #     (1189.0406, 32.8398),
-        #     (1507.6609, 34.7217),
-        #     (1977.2789, 36.804),
+#     'together_4x10': [
+#         (300, 0),
+#         (400, 0),
+#         (500, 0),
+#         (700, 0),
+#     ],
+    'together_4x20': [
+        (600, 0),
+        (900, 0),
+        (1200, 0),
+        (1500, 0),
     ],
-    'foreman': [
-        (600, 0.0),
-        #     # (1232.0508, 30.7664),
-        #     #     (1561.782, 32.1129),
-        #     #     (2121.3531, 34.046),
-        #     #     (2557.575, 35.3574),
+    'together_4x25': [
+        (200, 0),
+        (300, 0),
+        (400, 0),
+        (500, 0),
     ],
-    'football_cif': [
-        (1500, 31.399),
-        # (2066.744, 33.4538),
-        #     (2286.6193, 34.0987),
-        #     (2494.8056, 34.699),
-        #     (2700.2335, 35.2675),
-    ],
-    'container': [
-        (600, 33.763),
-        # (1488.8469, 32.077),
-        #     (1979.0609, 33.9638),
-        #     (2177.9664, 34.6095),
-        #     (2407.2797, 35.2946),
-    ],
+    'together_4x30': [
+        (300, 0),
+        (500, 0),
+        (700, 0),
+        (900, 0),
+    ]
 }
+    # 'bus_cif': [
+    #     (400, 0.0),
+    #     (700, 0.0),
+    #     (1000, 0.0),
+    #     (1400, 0.0)
+    # ],
+    # 'news_cif': [
+    #     (100, 0.0),
+    #     (150, 0.0),
+    #     (200, 0.0),
+    #     (250, 0.0)
+    # ],
+    # 'akiyo': [
+    #     (30, 0.0),
+    #     (50, 0.0),
+    #     (80, 0.0),
+    #     (100, 0.0)
+    #
+    # ],
+    # 'husky_cif': [
+    #     (4000, 0.0),
+    #     (4500, 0.0),
+    #     (5000, 0.0),
+    #     (5500, 0.0)
+    # ]
 
 pop_size = 60
-epochs = 150
+epochs = 280
 
 frames = utils.read_frames()
 for inp in target_bitrates.keys():
     fp = '../dataset/' + inp + '.yuv'
+    enc = '../encoded/cores.264'
+    dec = '../decoded/cores.yuv'
     fn = utils.get_filename(inp)
 
     res = (352, 288)
     fr_n = frames[fn]
 
-    tab = '../tables/' + fn + '.txt'
-    i_table = utils.read_table(tab, frames[fn])
+    tab = '../tables/' + fn + '.pickle'
+    i_table = utils.read_table_pickle(tab)
 
     for b, x in target_bitrates[inp]:
-        WANDB = str(x)
+        WANDB = "ipip"
 
-        cores = None
-        open(f"../stats/{fn}_{int(b)}_{pop_size}.best", 'w').close()
+        cores = [utils.get_core_vector(fp, enc, dec, res, fr_n, b)]
+        open(f"../stats/ipip/{fn}_{int(b)}_{pop_size}_{fr_n}.best", 'w').close()
+
+        t = time.time()
 
         g = GA(fp, frames_number=fr_n, population_size=pop_size,
-               bitrate=b-20, core_vectors=cores, table=i_table,
-               gop_size=60, train_epochs=15)
+               bitrate=b, core_vectors=cores, table=i_table, choosing_types=True,
+               train_epochs=8)
 
         g.fit(steps=epochs)
 
-        with open(f"../stats/{fn}_{int(b)}.pop", 'w') as out:
-            for line in g.population: print(*line, file=out)
+        with open(f"../stats/ipip/{fn}_{int(b)}_{pop_size}_{fr_n}.time", 'w') as outfile:
+            print((time.time() - t) / 60, file=outfile)
+        #
+        with open(f"../stats/ipip/{fn}_{int(b)}_{pop_size}_{fr_n}.best", 'a') as out:
+            print("CHECKED QP:", file=out)
+            for p in g.checked_best_qps:
+                print(p, end=' ', file=out)
+
+            print(file=out)
+            if g.choosing_types:
+                print("CHECKED TP:", file=out)
+                for p in g.checked_best_types:
+                    print(p, end=' ', file=out)
+                print(file=out)
+

@@ -1,14 +1,4 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[10]:
-
-
 import numpy as np
-
-
-# In[11]:
-
 
 class VideoCaptureYUV(object):
     def __init__(self, filename, resolution):
