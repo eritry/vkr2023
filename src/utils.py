@@ -10,9 +10,7 @@ import numpy as np
 import subprocess
 import os
 
-
-# In[2]:
-
+# считывание записанной заранее информации о количестве кадров
 def read_frames(input_file='../dataset/info/frames.info'):
     frames = {}
     for line in open(input_file, 'r'):
@@ -20,10 +18,7 @@ def read_frames(input_file='../dataset/info/frames.info'):
         frames[v[0]] = int(v[1])
     return frames
 
-
-# In[3]:
-
-
+# запуск декодера
 def decode(input_path, output_path):
     process = subprocess.Popen(
         ['/home/itmo/work/yandex/tools/JM/bin/ldecod_static', '-i', input_path, '-o', output_path],
@@ -33,9 +28,7 @@ def decode(input_path, output_path):
     return stdout, stderr
 
 
-# In[6]:
-
-
+# запуск кодера, параметры нужны чтобы он брал ровно те qp, которые укащаны в qpfile
 def encode(input_path, output_path, resolution, frames, preset='veryslow', bitrate=None, qpfile=None, qp=None,
            keyint=None):
     command = ['/home/itmo/work/yandex/tools/x264/x264',
@@ -63,7 +56,7 @@ def encode(input_path, output_path, resolution, frames, preset='veryslow', bitra
     stdout, stderr = process.communicate()
     return stdout, stderr
 
-
+# извлечение имени файла
 def get_filename(path):
     return path.split('/')[-1].split('.')[0]
 
@@ -114,8 +107,7 @@ def calculate_metrics(table, qps, frames):
     return psnr_y, bitrate
 
 
-# In[1]:
-
+# заставляет x264 выдать точно нужный битрейт, сам он не справляется например в случае ippppppp
 def get_exact_bitrate(inp, enc, dec, res, fr_n, bitr):
     bitrate_target = bitr
     bitrate_x = 0
@@ -148,26 +140,12 @@ def get_exact_bitrate(inp, enc, dec, res, fr_n, bitr):
     print("core: ", qp)
     return psnr_x264, bitrate_x264, qp
 
-
+# в качестве опорного вектора возвращает вектор полученный из x264
 def get_core_vector(inp, enc, dec, res, fr_n, b):
     _, _, core_vec = get_exact_bitrate(inp, enc, dec, res, fr_n, b)
     return core_vec
 
-
-def read_table(path, frames):
-    table = [[{} for _ in range(frames + 1)] for _ in range(52)]
-    cnt = collections.defaultdict(int)
-    for line in open(path, 'r'):
-        v = line.split(';')
-        for j in range(len(v)):
-            k = v[j].split()
-            if len(k) == 0: continue
-            table[int(k[0])][int(k[3])]['bytes'] = int(k[1])
-            table[int(k[0])][int(k[3])]['mse'] = float(k[2])
-            cnt[k[0]] += 1
-    return table
-
-
+# считывание предпосчитанных таблиц
 def read_table_pickle(path):
     with open(path, 'rb') as handle:
         table = pickle.load(handle)

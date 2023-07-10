@@ -15,7 +15,7 @@ import numpy as np
 from tqdm import tqdm as tqdm
 from sklearn.linear_model import LinearRegression
 
-
+# глобальная переменная с путем до файла в который будет писаться статистика по эпохам
 STAT_FILE = ""
 WANDB = ""
 
@@ -38,7 +38,6 @@ def close_plots():
 def get_random_index(n):
     return random.randint(0, n - 1)
 
-
 def get_two_random_indices(n):
     i = get_random_index(n)
     j = get_random_index(n)
@@ -46,11 +45,29 @@ def get_two_random_indices(n):
     if i > j: i, j = j, i
     return i, j
 
-
+# file_path - путь к исходному файлу
+# frames_number - количество кадров в исходном файле
+# population_size - размер популяции генетического алгоритма
+# cross_prob - вероятность кроссинговера, 1-cross_prob = вероятность мутации
+# resolution - разрешение исходного файла
+# bitrate - заданное ограничение на битрейт
+# hof - hall of fame, количество наилучших индивидов, которые попадут в следующее поколение
+#       без отбора
+# alpha - параметр нормализации для штрафа в фитнесс-функции, чем больше, тем значимее ощущется
+#       превышение целевого битрейта
+# table - предпосчитанные таблицы числа бит и psnr покадрово при кодировании в интра-режиме,
+#       нужны всегда (используются для всех I кадров), создаются в make_tables.py
+# core_vectors - вектор опорных векторов, используется для ускорения схождения обучения,
+#       можно не указывать
+# gop_size - длина GOP для режима без подбора типов кадров
+# train_epochs - сколько эпох предобучать линейные регрессии
+# choosing_types - булевый флаг, True если режим подбора типов кадров
+#
+#
 class GA:
     def __init__(self, file_path, frames_number, population_size=60, cross_prob=0.8,
                  resolution=(352, 288), bitrate=1200, hof=8, alpha=0.1, table=None,
-                 core_vectors=None, stat_file=None, gop_size=4, train_epochs=100, choosing_types = False):
+                 core_vectors=None, gop_size=4, train_epochs=20, choosing_types = False):
         self.table = table
         self.population_size = population_size
         self.cross_prob = cross_prob
@@ -108,7 +125,7 @@ class GA:
         self.epoch = 0
         self.core_vectors = core_vectors
 
-        self.stat_file = stat_file
+        self.init_population()
 
     def init_population(self):
         ones = np.array(np.array(
@@ -122,7 +139,6 @@ class GA:
             ) for _ in range(self.population_size - len(ones))]))
 
         print(ones)
-        # print(good_randoms)
         print(randoms)
 
         qps = ones
@@ -139,6 +155,7 @@ class GA:
 
         self.next_population = qps
 
+        # добавление core_vectors в популяцию
         if self.core_vectors is not None:
             for i in range(len(self.core_vectors)):
                 self.next_population[-i - 1] = np.array(self.core_vectors[i])
@@ -146,7 +163,7 @@ class GA:
         self.best_types = np.array([1] * self.frames)
         self.best_qps = self.next_population[-1]
 
-    # clear statistic for after last epoch
+    # clear statistic after last epoch
     def clear_statistics(self):
         self.bitrates = np.zeros(self.population_size)
         self.psnrs = np.zeros(self.population_size)
@@ -196,7 +213,7 @@ class GA:
 
     # check if this epoch for train
     def check_train(self):
-        return self.epoch < self.train_epochs or self.epoch % 10 == 0 or self.steps - self.epoch < 3
+        return self.epoch < self.train_epochs or self.epoch % 15 < 3 or self.steps - self.epoch < 8
 
     def train_types(self):
         return self.choosing_types and self.epoch % 80 >= 40
@@ -325,10 +342,13 @@ class GA:
         encoded = '../tmp/encoded' + str(i) + '.yuv'
         decoded = '../tmp/decoded' + str(i) + '.yuv'
 
-        if self.train_types():
-            self.write_qpfile(qp_path, self.best_qps, self.types[i])
+        if self.choosing_types:
+            if self.train_types():
+                self.write_qpfile(qp_path, self.best_qps, self.types[i])
+            else:
+                self.write_qpfile(qp_path, self.population[i], self.best_types)
         else:
-            self.write_qpfile(qp_path, self.population[i], self.best_types)
+            self.write_qpfile(qp_path, self.population[i])
 
         _, err = utils.encode(self.file, encoded, self.res, self.frames, qpfile=qp_path, preset='veryslow')
         if "x264 [error]: can't parse qpfile" in str(err):
@@ -486,8 +506,8 @@ class GA:
             if self.train_types():
                 next_population.extend(self.types[goods[hof]])
             else:
-                print(goods)
-                print(hof)
+                # print(goods)
+                # print(hof)
 
                 next_population.extend(self.population[goods[hof].astype(int)])
 
@@ -541,65 +561,49 @@ class GA:
         for _ in tqdm(range(steps)):
             self.step()
 
-
+# задание файлов для тестирования в формате имя : ограничение на битрейт
 target_bitrates = {
-    'together_4x10': [
-        (300, 0),
-        (400, 0),
-        (500, 0),
-        (700, 0),
-    ],
-    'together_4x20': [
-        (600, 0),
-        (900, 0),
-        (1200, 0),
-        (1500, 0),
-    ],
-    'together_4x25': [
-        (200, 0),
-        (300, 0),
-        (400, 0),
-        (500, 0),
-    ],
-    'together_4x30': [
-        (300, 0),
-        (500, 0),
-        (700, 0),
-        (900, 0),
-    ]
+    'container': (100, 200),
+    'akiyo': (30, 50),
 }
 
+# размер популяции
 pop_size = 60
-epochs = 280
 
+# количество эпох
+epochs = 2000
+
+# считываем информацию о количестве кадров в каждом файле
 frames = utils.read_frames()
+
 for inp in target_bitrates.keys():
     fp = '../dataset/' + inp + '.yuv'
     enc = '../encoded/cores.264'
     dec = '../decoded/cores.yuv'
     fn = utils.get_filename(inp)
 
-    res = (352, 288)
-    fr_n = frames[fn]
+    res = (352, 288) # исходное разрешение
+    fr_n = frames[fn] # исходное количество кадров
 
     tab = '../tables/' + fn + '.pickle'
-    i_table = utils.read_table_pickle(tab)
+    i_table = utils.read_table_pickle(tab) # чтение таблицы
 
-    for b, x in target_bitrates[inp]:
-        WANDB = "ipip"
-        STAT_FILE = f"../stats/ipip/{fn}_{int(b)}_{pop_size}_{fr_n}.best"
-        open(STAT_FILE, 'w').close()
+    for b in target_bitrates[inp]:
+        WANDB = "ipp"
+        STAT_FILE = f"../stats/ipp/{fn}_{int(b)}_{pop_size}_{fr_n}.best" # переопределение файла для статистики
+        open(STAT_FILE, 'w').close() # очистка файла для статистики
 
-        cores = [utils.get_core_vector(fp, enc, dec, res, fr_n, b)]
+        cores = [utils.get_core_vector(fp, enc, dec, res, fr_n, b)] # получение опорных векторов
 
         t = time.time()
 
         g = GA(fp, frames_number=fr_n, population_size=pop_size,
-               bitrate=b, core_vectors=cores, table=i_table, choosing_types=True,
-               train_epochs=8)
+               bitrate=b, core_vectors=cores, table=i_table, choosing_types=False,
+               train_epochs=35) # инициализация алгоритма
 
-        g.fit(steps=epochs)
+        g.fit(steps=epochs) # работа алгоритма
 
+        # запись лучшего индивида в файл статистики
         with open(STAT_FILE, 'a') as out:
             print("CHECKED QP:", file=out)
             for p in g.checked_best_qps:
