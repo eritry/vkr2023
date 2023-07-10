@@ -571,7 +571,7 @@ target_bitrates = {
 pop_size = 60
 
 # количество эпох
-epochs = 2000
+epochs = 300
 
 # считываем информацию о количестве кадров в каждом файле
 frames = utils.read_frames()
@@ -599,7 +599,7 @@ for inp in target_bitrates.keys():
 
         g = GA(fp, frames_number=fr_n, population_size=pop_size,
                bitrate=b, core_vectors=cores, table=i_table, choosing_types=False,
-               train_epochs=35) # инициализация алгоритма
+               train_epochs=15) # инициализация алгоритма
 
         g.fit(steps=epochs) # работа алгоритма
 
